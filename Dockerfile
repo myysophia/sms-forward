@@ -1,51 +1,51 @@
 # syntax=docker/dockerfile:1
+#
+# 多阶段构建：Builder → Runtime
+#    - Builder：用 Go 官方镜像编译（GOTOOLCHAIN=auto 会自动下载 go 1.24.1）
+#    - Runtime：极简 Alpine 只带根证书，最终镜像 ≈15 MB
 
 ########################
-# ── 1️⃣ Build stage ── #
+# 1️⃣  Build stage
 ########################
 FROM golang:1.22-alpine AS builder
 
+# 让 Go 自动拉符合 go.mod 版本的编译器（≥1.24.1）
+ENV GOTOOLCHAIN=auto
+
 WORKDIR /app
+RUN apk add --no-cache git tzdata  # git：拉私有包时用；tzdata：日志按本地时区
 
-# 如需拉私有包可安装 git；tzdata 让日志按本地时区显示（可选）
-RUN apk add --no-cache git tzdata
-
-# 先复制 go.mod/go.sum 并拉依赖，充分利用 Docker 层缓存
+# 利用缓存：先复制 go.{mod,sum} 并下载依赖
 COPY go.mod go.sum ./
 RUN go mod download
 
-# 再复制源码并编译；CGO_ENABLED=0 生成静态二进制
+# 复制源码并编译为静态二进制
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
     go build -o sms-server ./main.go
 
 
-##########################
-# ── 2️⃣ Runtime stage ── #
-##########################
+########################
+# 2️⃣  Runtime stage
+########################
 FROM alpine:3.19
 
 WORKDIR /app
+RUN apk --no-cache add ca-certificates   # 仅保留根证书，支持 HTTPS
 
-# 仅保留根证书，供 HTTPS 请求使用
-RUN apk --no-cache add ca-certificates
-
-# 拷贝编译好的二进制
+# 拷贝编译好的可执行文件
 COPY --from=builder /app/sms-server .
 
-# （可选）若想打包默认配置，取消下一行注释
-# COPY .env .
-
-# ==== 环境变量默认值（可覆盖） ====
+# 默认环境变量（可在 docker run -e … 覆盖）
 ENV SERVER_PORT=8080 \
     REDIS_HOST=redis \
     REDIS_PORT=6379 \
-    REDIS_PASSWORD= \
     REDIS_DB=0
+# ❗敏感信息如 REDIS_PASSWORD 建议运行时注入，不在镜像里硬编码
 
 EXPOSE 8080
 
-# 建议使用非 root 身份运行
+# 以非 root 用户运行
 RUN adduser -D -g '' appuser && chown -R appuser /app
 USER appuser
 
