@@ -1,6 +1,8 @@
 # SMS Forward Service
 
 一个轻量级的短信转发服务，用于接收、处理和存储短信验证码。该服务提供 RESTful API 接口，支持短信接收和查询功能，并使用 Redis 进行数据缓存。
+<img width="1077" alt="image" src="https://github.com/user-attachments/assets/012ba785-8f5a-4850-968d-d7ef1287f500" />
+
 
 ## 功能特点
 
