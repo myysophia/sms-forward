@@ -5,9 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/gin-gonic/gin"
-	"github.com/go-redis/redis/v8"
-	"github.com/joho/godotenv"
 	"io"
 	"log"
 	"net/http"
@@ -15,6 +12,10 @@ import (
 	"regexp"
 	"strconv"
 	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/go-redis/redis/v8"
+	"github.com/joho/godotenv"
 )
 
 /* ---------- 数据结构 ---------- */
@@ -24,6 +25,11 @@ type SMS struct {
 	From       string `json:"from" binding:"required"`
 	Content    string `json:"content" binding:"required"`
 	ReceivedAt int64  `json:"received_at,string" binding:"required"` // 兼容带引号时间戳
+}
+
+// QueryRequest 查询请求数据结构
+type QueryRequest struct {
+	Phone string `json:"phone" binding:"required"`
 }
 
 // Redis配置结构
@@ -167,13 +173,19 @@ func receiveSMS(c *gin.Context) {
 // GET /api/latest_sms/:phone
 func getLatestSMS(c *gin.Context) {
 	phone := c.Param("phone")
+	log.Printf("接收到查询请求，phone参数: %s", phone)
+	log.Printf("phone参数长度: %d", len(phone))
+
 	if phone == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "手机号不能为空"})
 		return
 	}
 
 	ctx := context.Background()
-	data, err := rdb.Get(ctx, fmt.Sprintf("latest_sms:%s", phone)).Result()
+	redisKey := fmt.Sprintf("latest_sms:%s", phone)
+	log.Printf("查询Redis key: %s", redisKey)
+
+	data, err := rdb.Get(ctx, redisKey).Result()
 	if err == redis.Nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "未找到该手机号的短信记录"})
 		return
@@ -190,6 +202,56 @@ func getLatestSMS(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "success", "data": sms})
 }
 
+// POST /api/query_sms
+func querySMS(c *gin.Context) {
+	var req QueryRequest
+
+	// 1) 读取并打印原始请求体
+	bodyBytes, err := c.GetRawData()
+	if err != nil {
+		log.Printf("读取请求体失败: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "读取请求体失败"})
+		return
+	}
+	log.Printf("收到查询请求体: %s", string(bodyBytes))
+	c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+
+	// 2) 解析 JSON
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误", "message": err.Error()})
+		return
+	}
+
+	log.Printf("查询手机号: %s", req.Phone)
+
+	if req.Phone == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "手机号不能为空"})
+		return
+	}
+
+	ctx := context.Background()
+	redisKey := fmt.Sprintf("latest_sms:%s", req.Phone)
+	log.Printf("查询Redis key: %s", redisKey)
+
+	data, err := rdb.Get(ctx, redisKey).Result()
+	if err == redis.Nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "未找到该手机号的短信记录"})
+		return
+	} else if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询失败", "message": err.Error()})
+		return
+	}
+
+	var sms SMS
+	if err := json.Unmarshal([]byte(data), &sms); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "数据解析失败"})
+		return
+	}
+
+	log.Printf("查询成功 - 来源:%s 验证码:%s", sms.From, sms.Content)
+	c.JSON(http.StatusOK, gin.H{"status": "success", "data": sms})
+}
+
 /* ---------- 启动入口 ---------- */
 
 func main() {
@@ -202,6 +264,7 @@ func main() {
 	{
 		api.POST("/receive_sms", receiveSMS)
 		api.GET("/latest_sms/:phone", getLatestSMS)
+		api.POST("/query_sms", querySMS) // 新增POST查询接口
 	}
 
 	port := getEnvWithDefault("SERVER_PORT", "8080")
